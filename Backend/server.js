@@ -21,36 +21,85 @@ const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
 
 // Default dictionary of abbreviations
 const DEFAULT_DICTIONARY = [
-  { short: 'SDE', full: 'Software Developer Engineer' },
-  { short: 'INC', full: 'International Corporations' },
-  { short: 'LTD', full: 'Limited' },
-  { short: 'CORP', full: 'Corporation' },
-  { short: 'LLC', full: 'Limited Liability Company' },
-  { short: 'CEO', full: 'Chief Executive Officer' },
-  { short: 'CTO', full: 'Chief Technology Officer' },
-  { short: 'CFO', full: 'Chief Financial Officer' },
-  { short: 'HR', full: 'Human Resources' },
-  { short: 'MGR', full: 'Manager' },
-  { short: 'ASAP', full: 'As Soon As Possible' },
-  { short: 'EOD', full: 'End of Day' },
-  { short: 'ETA', full: 'Estimated Time of Arrival' },
-  { short: 'FAQ', full: 'Frequently Asked Questions' },
-  { short: 'GUI', full: 'Graphical User Interface' },
-  { short: 'API', full: 'Application Programming Interface' },
-  { short: 'DB', full: 'Database' },
-  { short: 'UI', full: 'User Interface' },
-  { short: 'UX', full: 'User Experience' },
-  { short: 'QA', full: 'Quality Assurance' },
-  { short: 'LLP', full: 'Limited Liability Partnership' },
+  { short: 'SDE',     full: 'Software Developer Engineer' },
+  { short: 'INC',     full: 'Incorporated' },
+  { short: 'LTD',     full: 'Limited' },
+  { short: 'CORP',    full: 'Corporation' },
+  { short: 'LLC',     full: 'Limited Liability Company' },
+  { short: 'CEO',     full: 'Chief Executive Officer' },
+  { short: 'CTO',     full: 'Chief Technology Officer' },
+  { short: 'CFO',     full: 'Chief Financial Officer' },
+  { short: 'HR',      full: 'Human Resources' },
+  { short: 'MGR',     full: 'Manager' },
+  { short: 'ASAP',    full: 'As Soon As Possible' },
+  { short: 'EOD',     full: 'End of Day' },
+  { short: 'ETA',     full: 'Estimated Time of Arrival' },
+  { short: 'FAQ',     full: 'Frequently Asked Questions' },
+  { short: 'GUI',     full: 'Graphical User Interface' },
+  { short: 'API',     full: 'Application Programming Interface' },
+  { short: 'DB',      full: 'Database' },
+  { short: 'UI',      full: 'User Interface' },
+  { short: 'UX',      full: 'User Experience' },
+  { short: 'QA',      full: 'Quality Assurance' },
+  { short: 'LLP',     full: 'Limited Liability Partnership' },
   { short: 'PVT LTD', full: 'Private Limited' },
-  { short: 'SAS', full: 'Sociedad por Acciones Simplificada' }
+  { short: 'PVT',     full: 'Private' },
+  { short: 'SAS',     full: 'Sociedad por Acciones Simplificada' },
+  { short: 'AG',      full: 'Aktiengesellschaft' },
+  { short: 'SA',      full: 'Société Anonyme' },
+  { short: 'NV',      full: 'Naamloze Vennootschap' },
+  { short: 'BV',      full: 'Besloten Vennootschap' },
+  { short: 'GMBH',    full: 'Gesellschaft mit beschränkter Haftung' },
+  { short: 'SRL',     full: 'Sociedad de Responsabilidad Limitada' },
+  { short: 'PTY',     full: 'Proprietary' },
+  { short: 'INTL',    full: 'International' },
+  { short: 'MGMT',    full: 'Management' },
+  { short: 'SVCS',    full: 'Services' },
+  { short: 'ASSOC',   full: 'Associates' },
+  { short: 'ENGG',    full: 'Engineering' },
+  { short: 'INFRA',   full: 'Infrastructure' },
+  { short: 'FINL',    full: 'Financial' },
 ];
 
-// ---------- Helper: Expand abbreviations in a text ----------
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper 1: Strip dots from acronym notation BEFORE dictionary expansion.
+//
+// Problem: The dictionary stores "AG", "SAS", "LLP" etc. as plain strings, but
+// real-world data often writes them as "A.G.", "S.A.S.", "L.L.P." — with dots
+// between every letter. The `\b` word-boundary anchor in the expansion regex
+// does NOT fire around a letter that is immediately followed by a dot, so
+// "A.G." is invisible to `\bAG\b` and the entry is never expanded.
+//
+// Fix: Collapse dotted single-letter sequences into plain acronyms first.
+//   "S.A.S."  →  "SAS"
+//   "L.L.P."  →  "LLP"
+//   "A.G."    →  "AG"
+//   "T.C.S."  →  "TCS"
+// ─────────────────────────────────────────────────────────────────────────────
+function preprocessAcronyms(text) {
+  if (!text) return text;
+  return text
+    // 4-letter dotted: A.B.C.D.
+    .replace(/\b([A-Za-z])\.([A-Za-z])\.([A-Za-z])\.([A-Za-z])\./g, '$1$2$3$4')
+    // 3-letter dotted with trailing dot: A.B.C.
+    .replace(/\b([A-Za-z])\.([A-Za-z])\.([A-Za-z])\./g, '$1$2$3')
+    // 3-letter dotted no trailing dot: A.B.C
+    .replace(/\b([A-Za-z])\.([A-Za-z])\.([A-Za-z])\b/g, '$1$2$3')
+    // 2-letter dotted with trailing dot: A.B.
+    .replace(/\b([A-Za-z])\.([A-Za-z])\./g, '$1$2')
+    // 2-letter dotted no trailing dot: A.B
+    .replace(/\b([A-Za-z])\.([A-Za-z])\b/g, '$1$2');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper 2: Expand abbreviations in a text using the dictionary.
+//
+// Runs preprocessAcronyms first so dotted forms ("A.G.", "S.A.S.") are
+// normalised to plain acronyms before the regex dictionary lookup fires.
+// ─────────────────────────────────────────────────────────────────────────────
 function expandAbbreviationsInText(text, dictionary) {
   if (!text) return text;
-  let expanded = text;
-  // Sort by longest abbreviation first to avoid partial replacements
+  let expanded = preprocessAcronyms(text);
   const sortedDict = [...dictionary].sort((a, b) => b.short.length - a.short.length);
   for (const entry of sortedDict) {
     const regex = new RegExp(`\\b${entry.short.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
@@ -59,7 +108,88 @@ function expandAbbreviationsInText(text, dictionary) {
   return expanded;
 }
 
-// ---------- Existing endpoints ----------
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper 3: Exact-expansion-match guard.
+//
+// After both sides are fully expanded, if they are identical (case-insensitive,
+// trimmed), it means the abbreviation on the left IS definitively the same
+// entity as the expanded form on the right — score must be 100, no fuzzball
+// needed. This is the explicit check the user requested:
+//   "if the abbreviation found is the same as the expanded right → score = 100"
+//
+// Examples that hit this path:
+//   "Siemens A.G."  expands to "Siemens Aktiengesellschaft"
+//   "Siemens Aktiengesellschaft" stays as-is
+//   → both identical → 100
+//
+//   "Cbre Colombia S.A.S." expands to "Cbre Colombia Sociedad por Acciones Simplificada"
+//   right side is already "Cbre Colombia Sociedad por Acciones Simplificada"
+//   → both identical → 100
+// ─────────────────────────────────────────────────────────────────────────────
+function expansionsAreIdentical(expandedLeft, expandedRight) {
+  return expandedLeft.trim().toLowerCase() === expandedRight.trim().toLowerCase();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper 4: Normalise prefix-abbreviations before fuzzy scoring.
+//
+// Handles cases where one token is a legitimate short form of another but
+// was NOT in the dictionary, so expansion didn't help:
+//   "Tech" vs "Technology" → both become "technology"
+//   "Mgmt" vs "Management" → both become "management"  (if not in dict)
+//
+// Condition: shorter token must be ≥3 chars, must be a prefix of the longer
+// token, and must cover ≥40% of it (guards against accidental matches).
+// ─────────────────────────────────────────────────────────────────────────────
+function normalizeForScoring(left, right) {
+  const leftTokens  = left.toLowerCase().split(/\s+/);
+  const rightTokens = right.toLowerCase().split(/\s+/);
+  const replacements = new Map();
+
+  for (const lt of leftTokens) {
+    for (const rt of rightTokens) {
+      if (lt === rt) continue;
+      const [shorter, longer] = lt.length < rt.length ? [lt, rt] : [rt, lt];
+      if (
+        shorter.length >= 3 &&
+        longer.startsWith(shorter) &&
+        shorter.length / longer.length >= 0.4
+      ) {
+        replacements.set(shorter, longer);
+      }
+    }
+  }
+
+  if (replacements.size === 0) return [left, right];
+
+  const apply = str =>
+    str.toLowerCase().split(/\s+/).map(tok => replacements.get(tok) || tok).join(' ');
+
+  return [apply(left), apply(right)];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core scoring function — used by /api/fuzzy-compare-enhanced.
+// Pipeline:
+//   1. expandAbbreviationsInText (includes preprocessAcronyms inside)
+//   2. expansionsAreIdentical  → if yes, return 100 immediately
+//   3. normalizeForScoring     → collapse prefix-abbreviation token pairs
+//   4. fuzzball.token_set_ratio
+// ─────────────────────────────────────────────────────────────────────────────
+function computeSimilarityScore(leftVal, rightVal) {
+  // Step 2 — exact-expansion guard
+  if (expansionsAreIdentical(leftVal, rightVal)) {
+    return 100;
+  }
+  // Step 3 — prefix-abbreviation normalisation
+  const [normLeft, normRight] = normalizeForScoring(leftVal, rightVal);
+  // Step 4 — fuzzy score
+  return Math.round(fuzzball.token_set_ratio(normLeft, normRight));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Endpoints
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Upload Excel file
 app.post('/api/upload', upload.single('file'), (req, res) => {
@@ -142,7 +272,7 @@ app.post('/api/process', (req, res) => {
     const headers = rawData[0].map(h => String(h || ''));
     const columnIndex = headers.findIndex(h => h === columnName);
     if (columnIndex === -1) return res.status(400).json({ error: `Column "${columnName}" not found` });
-    
+
     const dictionary = [...DEFAULT_DICTIONARY, ...customMappings];
     const results = [];
     for (let i = 1; i < rawData.length; i++) {
@@ -162,7 +292,7 @@ app.post('/api/process', (req, res) => {
         originalRow: { ...row }
       });
     }
-    
+
     const newHeaders = [...headers, 'Matched Abbreviation', 'Expanded Value', 'Match Score'];
     const newData = [newHeaders];
     for (let i = 0; i < results.length; i++) {
@@ -182,7 +312,7 @@ app.post('/api/process', (req, res) => {
     const processId = uuidv4();
     processes.set(processId, { workbookBuffer, filename: `fuzzy_lookup_${Date.now()}.xlsx` });
     setTimeout(() => processes.delete(processId), 3600000);
-    
+
     const previewResults = results.slice(0, 100);
     res.json({
       processId,
@@ -211,7 +341,9 @@ app.get('/api/download/:processId', (req, res) => {
   }
 });
 
-// ---------- NEW: Enhanced fuzzy column comparison with abbreviation expansion ----------
+// ─────────────────────────────────────────────────────────────────────────────
+// Enhanced fuzzy column comparison with abbreviation expansion
+// ─────────────────────────────────────────────────────────────────────────────
 app.post('/api/fuzzy-compare-enhanced', (req, res) => {
   try {
     const {
@@ -221,7 +353,7 @@ app.post('/api/fuzzy-compare-enhanced', (req, res) => {
       columnRight,
       customMappings = [],
       threshold = 60,
-      expandLeft = true,
+      expandLeft  = true,
       expandRight = true
     } = req.body;
 
@@ -233,7 +365,7 @@ app.post('/api/fuzzy-compare-enhanced', (req, res) => {
     if (rawData.length < 2) return res.status(400).json({ error: 'No data rows' });
 
     const headers = rawData[0].map(h => String(h || ''));
-    const leftIdx = headers.findIndex(h => h === columnLeft);
+    const leftIdx  = headers.findIndex(h => h === columnLeft);
     const rightIdx = headers.findIndex(h => h === columnRight);
     if (leftIdx === -1 || rightIdx === -1) {
       return res.status(400).json({ error: 'One or both columns not found' });
@@ -243,29 +375,28 @@ app.post('/api/fuzzy-compare-enhanced', (req, res) => {
     const results = [];
 
     for (let i = 1; i < rawData.length; i++) {
-      let leftVal = rawData[i][leftIdx] ? String(rawData[i][leftIdx]).trim() : '';
+      let leftVal  = rawData[i][leftIdx]  ? String(rawData[i][leftIdx]).trim()  : '';
       let rightVal = rawData[i][rightIdx] ? String(rawData[i][rightIdx]).trim() : '';
 
-      if (expandLeft && leftVal) leftVal = expandAbbreviationsInText(leftVal, dictionary);
+      // Step 1 — expand abbreviations (preprocessAcronyms runs inside this)
+      if (expandLeft  && leftVal)  leftVal  = expandAbbreviationsInText(leftVal,  dictionary);
       if (expandRight && rightVal) rightVal = expandAbbreviationsInText(rightVal, dictionary);
 
-      let score = 0;
-      if (leftVal && rightVal) {
-        score = fuzzball.token_set_ratio(leftVal, rightVal);
-      }
+      // Steps 2-4 — exact-match guard → prefix normalisation → fuzzy score
+      const score = (leftVal && rightVal) ? computeSimilarityScore(leftVal, rightVal) : 0;
 
       results.push({
-        rowIndex: i,
-        originalLeft: rawData[i][leftIdx] ? String(rawData[i][leftIdx]).trim() : '',
+        rowIndex:      i,
+        originalLeft:  rawData[i][leftIdx]  ? String(rawData[i][leftIdx]).trim()  : '',
         originalRight: rawData[i][rightIdx] ? String(rawData[i][rightIdx]).trim() : '',
-        expandedLeft: leftVal,
+        expandedLeft:  leftVal,
         expandedRight: rightVal,
-        similarityScore: Math.round(score),
+        similarityScore: score,
         isMatch: score >= threshold
       });
     }
 
-    // Build output Excel with additional columns
+    // Build output Excel
     const newHeaders = [...headers, 'Expanded Left', 'Expanded Right', 'Similarity Score', 'Is Match (>threshold)'];
     const newData = [newHeaders];
     for (let i = 0; i < results.length; i++) {
@@ -280,18 +411,17 @@ app.post('/api/fuzzy-compare-enhanced', (req, res) => {
     }
 
     const newWorksheet = XLSX.utils.aoa_to_sheet(newData);
-    const newWorkbook = XLSX.utils.book_new();
+    const newWorkbook  = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(newWorkbook, newWorksheet, sheetName);
     const workbookBuffer = XLSX.write(newWorkbook, { type: 'buffer', bookType: 'xlsx' });
     const processId = uuidv4();
     processes.set(processId, { workbookBuffer, filename: `fuzzy_compare_enhanced_${Date.now()}.xlsx` });
     setTimeout(() => processes.delete(processId), 3600000);
 
-    const previewResults = results.slice(0, 100);
     res.json({
       processId,
-      preview: previewResults,
-      totalRows: results.length,
+      preview:      results.slice(0, 100),
+      totalRows:    results.length,
       matchedCount: results.filter(r => r.isMatch).length
     });
   } catch (error) {
