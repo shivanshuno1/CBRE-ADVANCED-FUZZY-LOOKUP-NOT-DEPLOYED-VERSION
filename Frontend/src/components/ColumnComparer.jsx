@@ -1,133 +1,335 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import ResultsTable from './ResultsTable';
-import DownloadButton from './DownloadButton';
 
-function ColumnComparer({ uploadId, sheetName, columns, customMappings }) {
-  const [leftColumn, setLeftColumn] = useState('');
-  const [rightColumn, setRightColumn] = useState('');
+const ColumnComparer = ({ uploadId, sheets }) => {
+  const [leftSheet, setLeftSheet] = useState('');
+  const [rightSheet, setRightSheet] = useState('');
+  const [leftCols, setLeftCols] = useState([]);
+  const [rightCols, setRightCols] = useState([]);
+  const [matchLeft, setMatchLeft] = useState('');
+  const [matchRight, setMatchRight] = useState('');
   const [threshold, setThreshold] = useState(60);
-  const [expandLeft, setExpandLeft] = useState(true);
-  const [expandRight, setExpandRight] = useState(true);
-  const [processing, setProcessing] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
-  const [processId, setProcessId] = useState(null);
   const [error, setError] = useState('');
+  const [abortController, setAbortController] = useState(null);
 
-  const handleCompare = async () => {
-    if (!leftColumn || !rightColumn) {
-      setError('Please select both columns');
+  // Fetch left columns
+  useEffect(() => {
+    if (!leftSheet) {
+      setLeftCols([]);
       return;
     }
-    setProcessing(true);
-    setError('');
-    try {
-      const response = await axios.post('/api/fuzzy-compare-enhanced', {
-        uploadId,
-        sheetName,
-        columnLeft: leftColumn,
-        columnRight: rightColumn,
-        customMappings,
-        threshold,
-        expandLeft,
-        expandRight
+    axios.get(`http://localhost:5000/api/columns/${uploadId}/${leftSheet}`)
+      .then(res => {
+        const columns = res.data && Array.isArray(res.data.columns) ? res.data.columns : [];
+        setLeftCols(columns);
+      })
+      .catch(err => {
+        console.error('Error fetching left columns:', err);
+        setLeftCols([]);
+        setError(`Failed to load columns from left sheet: ${err.message}`);
       });
-      setResults(response.data);
-      setProcessId(response.data.processId);
+  }, [leftSheet, uploadId]);
+
+  // Fetch right columns
+  useEffect(() => {
+    if (!rightSheet) {
+      setRightCols([]);
+      return;
+    }
+    axios.get(`http://localhost:5000/api/columns/${uploadId}/${rightSheet}`)
+      .then(res => {
+        const columns = res.data && Array.isArray(res.data.columns) ? res.data.columns : [];
+        setRightCols(columns);
+      })
+      .catch(err => {
+        console.error('Error fetching right columns:', err);
+        setRightCols([]);
+        setError(`Failed to load columns from right sheet: ${err.message}`);
+      });
+  }, [rightSheet, uploadId]);
+
+  // Run fuzzy match with abort support
+  const runMatch = async () => {
+    if (!leftSheet || !rightSheet || !matchLeft || !matchRight) {
+      setError('Please select both sheets and match columns');
+      return;
+    }
+
+    // Cancel any previous ongoing request
+    if (abortController) {
+      abortController.abort();
+    }
+
+    const controller = new AbortController();
+    setAbortController(controller);
+    setLoading(true);
+    setError('');
+    setResults(null);
+
+    try {
+      const res = await axios.post(
+        'http://localhost:5000/api/fuzzy-match-preview',
+        {
+          sheetLeft: leftSheet,
+          sheetRight: rightSheet,
+          columnLeft: matchLeft,
+          columnRight: matchRight,
+          threshold
+        },
+        { signal: controller.signal }
+      );
+      setResults(res.data);
     } catch (err) {
-      setError('Comparison failed: ' + (err.response?.data?.error || err.message));
+      if (err.name === 'AbortError') {
+        setError('Matching was cancelled.');
+      } else {
+        console.error('Match error:', err);
+        setError(err.response?.data?.error || err.message);
+      }
     } finally {
-      setProcessing(false);
+      setLoading(false);
+      setAbortController(null);
     }
   };
 
-  // Transform results for ResultsTable (which expects originalValue, matchedAbbreviation, expandedValue, matchScore)
-  const tableResults = results?.preview.map(r => ({
-    originalValue: `${r.originalLeft} ↔ ${r.originalRight}`,
-    matchedAbbreviation: '',
-    expandedValue: `Score: ${r.similarityScore}% ${r.isMatch ? '✓' : '✗'}`,
-    matchScore: r.similarityScore
-  })) || [];
+  const cancelMatch = () => {
+    if (abortController) {
+      abortController.abort();
+      setLoading(false);
+    }
+  };
+
+  const downloadExcel = async () => {
+    try {
+      const res = await axios.post(
+        'http://localhost:5000/api/fuzzy-compare-cross-sheet',
+        {
+          sheetLeft: leftSheet,
+          sheetRight: rightSheet,
+          columnLeft: matchLeft,
+          columnRight: matchRight,
+          threshold
+        },
+        { responseType: 'blob' }
+      );
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'fuzzy_result.xlsx';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Download error:', err);
+      setError('Download failed: ' + err.message);
+    }
+  };
+
+  // Safe render for column options
+  const renderColumnOptions = (cols, type) => {
+    if (!cols || !Array.isArray(cols) || cols.length === 0) {
+      return <option value="" disabled>No columns available</option>;
+    }
+    return cols.map((col) => {
+      const colName = col && col.name ? col.name : col;
+      if (!colName) return null;
+      return (
+        <option key={`${type}-${colName}`} value={colName}>
+          {colName}
+        </option>
+      );
+    }).filter(Boolean);
+  };
+
+  const safeSheets = Array.isArray(sheets) ? sheets : [];
 
   return (
-    <div className="bg-white rounded-lg shadow-md p-6 space-y-4">
-      <h3 className="text-lg font-semibold text-gray-800">🔍 Fuzzy Compare Two Columns (with Abbreviation Expansion)</h3>
+    <div style={{ border: '1px solid #ccc', padding: 20, marginTop: 20 }}>
+      <h2>Cross-Sheet Fuzzy Match</h2>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Left Column</label>
+      {error && <div style={{ color: 'red', marginBottom: 15, padding: 10, backgroundColor: '#ffeeee', borderRadius: 4 }}>{error}</div>}
+
+      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+        {/* Left Sheet Section */}
+        <div style={{ flex: 1, minWidth: 250 }}>
+          <div><strong>Left Sheet</strong></div>
           <select
-            value={leftColumn}
-            onChange={(e) => setLeftColumn(e.target.value)}
-            className="w-full px-3 py-2 border rounded-lg"
+            value={leftSheet}
+            onChange={e => setLeftSheet(e.target.value)}
+            style={{ width: '100%', padding: 8, marginTop: 5 }}
           >
-            <option value="">Select column</option>
-            {columns.map(col => (
-              <option key={col.index} value={col.name}>{col.name}</option>
-            ))}
+            <option value="">Select a sheet</option>
+            {safeSheets.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
           </select>
+
+          {leftSheet && (
+            <div style={{ marginTop: 15 }}>
+              <div><strong>Match Column (Left)</strong></div>
+              <select
+                value={matchLeft}
+                onChange={e => setMatchLeft(e.target.value)}
+                style={{ width: '100%', padding: 8, marginTop: 5 }}
+                disabled={!leftCols || leftCols.length === 0}
+              >
+                <option value="">Select column</option>
+                {renderColumnOptions(leftCols, 'left')}
+              </select>
+              {leftCols && leftCols.length === 0 && leftSheet && (
+                <div style={{ fontSize: 12, color: '#666', marginTop: 5 }}>
+                  Loading columns or no columns found...
+                </div>
+              )}
+            </div>
+          )}
         </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Right Column</label>
+
+        {/* Right Sheet Section */}
+        <div style={{ flex: 1, minWidth: 250 }}>
+          <div><strong>Right Sheet</strong></div>
           <select
-            value={rightColumn}
-            onChange={(e) => setRightColumn(e.target.value)}
-            className="w-full px-3 py-2 border rounded-lg"
+            value={rightSheet}
+            onChange={e => setRightSheet(e.target.value)}
+            style={{ width: '100%', padding: 8, marginTop: 5 }}
           >
-            <option value="">Select column</option>
-            {columns.map(col => (
-              <option key={col.index} value={col.name}>{col.name}</option>
-            ))}
+            <option value="">Select a sheet</option>
+            {safeSheets.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
           </select>
+
+          {rightSheet && (
+            <div style={{ marginTop: 15 }}>
+              <div><strong>Match Column (Right)</strong></div>
+              <select
+                value={matchRight}
+                onChange={e => setMatchRight(e.target.value)}
+                style={{ width: '100%', padding: 8, marginTop: 5 }}
+                disabled={!rightCols || rightCols.length === 0}
+              >
+                <option value="">Select column</option>
+                {renderColumnOptions(rightCols, 'right')}
+              </select>
+              {rightCols && rightCols.length === 0 && rightSheet && (
+                <div style={{ fontSize: 12, color: '#666', marginTop: 5 }}>
+                  Loading columns or no columns found...
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="flex gap-4 items-center">
-        <label className="flex items-center gap-2">
-          <input type="checkbox" checked={expandLeft} onChange={(e) => setExpandLeft(e.target.checked)} />
-          Expand abbreviations in LEFT column
-        </label>
-        <label className="flex items-center gap-2">
-          <input type="checkbox" checked={expandRight} onChange={(e) => setExpandRight(e.target.checked)} />
-          Expand abbreviations in RIGHT column
-        </label>
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          Similarity Threshold ({threshold}%)
-        </label>
+      {/* Threshold Slider */}
+      <div style={{ marginTop: 20 }}>
+        <div><strong>Similarity Threshold: {threshold}%</strong></div>
         <input
           type="range"
           min="0"
           max="100"
           value={threshold}
-          onChange={(e) => setThreshold(parseInt(e.target.value))}
-          className="w-full"
+          onChange={e => setThreshold(parseInt(e.target.value))}
+          style={{ width: '100%', marginTop: 5 }}
         />
+        <div style={{ fontSize: 12, color: '#666', marginTop: 5 }}>
+          Higher = stricter matching, Lower = more matches
+        </div>
       </div>
 
-      <button
-        onClick={handleCompare}
-        disabled={processing || !leftColumn || !rightColumn}
-        className="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
-      >
-        {processing ? 'Comparing...' : 'Compare Columns'}
-      </button>
+      {/* Action Buttons */}
+      <div style={{ marginTop: 20, display: 'flex', gap: 10 }}>
+        {!loading ? (
+          <button
+            onClick={runMatch}
+            disabled={!leftSheet || !rightSheet || !matchLeft || !matchRight}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#007bff',
+              color: 'white',
+              border: 'none',
+              borderRadius: 4,
+              cursor: (!leftSheet || !rightSheet || !matchLeft || !matchRight) ? 'not-allowed' : 'pointer',
+              opacity: (!leftSheet || !rightSheet || !matchLeft || !matchRight) ? 0.6 : 1
+            }}
+          >
+            Run Fuzzy Match
+          </button>
+        ) : (
+          <button
+            onClick={cancelMatch}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#dc3545',
+              color: 'white',
+              border: 'none',
+              borderRadius: 4,
+              cursor: 'pointer'
+            }}
+          >
+            Cancel Matching
+          </button>
+        )}
 
-      {error && <div className="text-red-600 text-sm">{error}</div>}
+        {results && results.matched && results.matched.length > 0 && (
+          <button
+            onClick={downloadExcel}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#28a745',
+              color: 'white',
+              border: 'none',
+              borderRadius: 4,
+              cursor: 'pointer'
+            }}
+          >
+            Download Excel
+          </button>
+        )}
+      </div>
 
-      {results && (
-        <div className="mt-4">
-          <div className="bg-green-50 p-3 rounded flex justify-between items-center">
-            <span>Matched {results.matchedCount} of {results.totalRows} rows (score ≥ {threshold}%)</span>
-            <DownloadButton processId={processId} />
-          </div>
-          <ResultsTable results={tableResults} totalRows={results.totalRows} />
+      {/* Results Display */}
+      {results && results.matched && (
+        <div style={{ marginTop: 20 }}>
+          <h3>
+            Results: {results.matchedCount || 0} matches out of {results.totalLeft || 0} left rows
+            {results.matchedCount === 0 && " — Try lowering the similarity threshold"}
+          </h3>
+
+          {results.matched.length > 0 && (
+            <div style={{ overflowX: 'auto' }}>
+              <table border="1" cellPadding="8" style={{ borderCollapse: 'collapse', width: '100%', marginTop: 10 }}>
+                <thead style={{ backgroundColor: '#f0f0f0' }}>
+                  <tr>
+                    <th>Left {matchLeft || 'Column'}</th>
+                    <th>Right {matchRight || 'Column'}</th>
+                    <th>Similarity</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {results.matched.slice(0, 20).map((m, idx) => (
+                    <tr key={idx}>
+                      <td style={{ border: '1px solid #ddd', padding: 8 }}>
+                        {m.left && m.left[matchLeft] ? String(m.left[matchLeft]) : '—'}
+                      </td>
+                      <td style={{ border: '1px solid #ddd', padding: 8 }}>
+                        {m.right && m.right[matchRight] ? String(m.right[matchRight]) : '—'}
+                      </td>
+                      <td style={{ border: '1px solid #ddd', padding: 8, textAlign: 'center' }}>
+                        {m.similarity}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {results.matched.length > 20 && (
+                <div style={{ marginTop: 10, color: '#666', textAlign: 'center' }}>
+                  ... and {results.matched.length - 20} more rows. Download the Excel file to see all matches.
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
-}
+};
 
 export default ColumnComparer;
