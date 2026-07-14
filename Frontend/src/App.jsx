@@ -5,6 +5,7 @@ import ColumnSelector from './components/ColumnSelector';
 import ColumnComparer from './components/ColumnComparer';
 import MultiKeyComparer from './components/MultiKeyComparer';
 import axios from 'axios';
+import './App.css';
 
 function App() {
   const [uploadId, setUploadId]         = useState(null);
@@ -31,60 +32,68 @@ function App() {
     }
   };
 
-  const btnStyle = (active) => ({
-    marginRight: 10,
-    padding: '6px 14px',
-    background: active ? '#2563eb' : '#e5e7eb',
-    color: active ? '#fff' : '#374151',
-    border: 'none',
-    borderRadius: 6,
-    cursor: 'pointer',
-    fontWeight: active ? 700 : 400,
-    fontSize: 14
-  });
+  const btnClass = (active) => `btn ${active ? 'active' : ''}`;
 
   return (
-    <div style={{ padding: 24, fontFamily: 'Arial, sans-serif', maxWidth: 1200, margin: '0 auto' }}>
-      <h1 style={{ marginBottom: 4 }}>Excel Fuzzy Lookup</h1>
+    <div className="app">
+      <div className="header">
+        <h1 className="title">Excel Fuzzy Lookup</h1>
+        <div className="subtitle">Smart, fast fuzzy matching for Excel sheets</div>
+      </div>
 
       {!uploadId ? (
-        <FileUploader onUploadSuccess={handleUploadSuccess} onError={setError} />
+        <div className="card spaced">
+          <FileUploader onUploadSuccess={handleUploadSuccess} onError={setError} />
+        </div>
       ) : (
         <>
-          <div style={{ marginBottom: 20, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-            <button onClick={() => setMode('abbrev')} style={btnStyle(mode === 'abbrev')}>
-              Abbreviation Mode
-            </button>
-            <button onClick={() => setMode('compare')} style={btnStyle(mode === 'compare')}>
-              Cross-Sheet Match
-            </button>
-            <button onClick={() => setMode('multikey')} style={btnStyle(mode === 'multikey')}>
-              🔑 Multi-Key Match
-            </button>
+          <div className="card">
+            <div className="mode-row">
+              <button onClick={() => setMode('abbrev')} className={btnClass(mode === 'abbrev')}>
+                Abbreviation Mode
+              </button>
+              <button onClick={() => setMode('compare')} className={btnClass(mode === 'compare')}>
+                Cross-Sheet Match
+              </button>
+              <button onClick={() => setMode('multikey')} className={btnClass(mode === 'multikey')}>
+                🔑 Multi-Key Match
+              </button>
+            </div>
+
+            {error && <div className="error">{error}</div>}
+
+            <div className="layout">
+              <div className="panel">
+                {mode === 'abbrev' && (
+                  <>
+                    {!selectedSheet && <SheetSelector sheets={sheets} onSelect={handleSheetSelect} />}
+                    {selectedSheet && (
+                      <ColumnSelector
+                        columns={columns}
+                        selectedColumn={selectedColumn}
+                        onSelect={setSelectedColumn}
+                      />
+                    )}
+                  </>
+                )}
+
+                {mode === 'compare' && (
+                  <ColumnComparer uploadId={uploadId} sheets={sheets} />
+                )}
+
+                {mode === 'multikey' && (
+                  <MultiKeyComparer uploadId={uploadId} sheets={sheets} />
+                )}
+              </div>
+
+              <div className="panel">
+                <div className="card">
+                  <div className="muted">Preview & Tips</div>
+                  <div style={{marginTop:8,fontSize:13}}>Choose a mode and pick a sheet/column to begin. Results will appear here.</div>
+                </div>
+              </div>
+            </div>
           </div>
-
-          {error && <div style={{ color: 'red' }}>{error}</div>}
-
-          {mode === 'abbrev' && (
-            <>
-              {!selectedSheet && <SheetSelector sheets={sheets} onSelect={handleSheetSelect} />}
-              {selectedSheet && (
-                <ColumnSelector
-                  columns={columns}
-                  selectedColumn={selectedColumn}
-                  onSelect={setSelectedColumn}
-                />
-              )}
-            </>
-          )}
-
-          {mode === 'compare' && (
-            <ColumnComparer uploadId={uploadId} sheets={sheets} />
-          )}
-
-          {mode === 'multikey' && (
-            <MultiKeyComparer uploadId={uploadId} sheets={sheets} />
-          )}
         </>
       )}
     </div>

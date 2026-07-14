@@ -296,7 +296,7 @@ const ColumnComparer = ({ uploadId, sheets }) => {
           {results.matched.length > 0 && (
             <div style={{ overflowX: 'auto' }}>
               <table border="1" cellPadding="8" style={{ borderCollapse: 'collapse', width: '100%', marginTop: 10 }}>
-                <thead style={{ backgroundColor: '#f0f0f0' }}>
+                <thead style={{ backgroundColor: 'Black' }}>
                   <tr>
                     <th>Left {matchLeft || 'Column'}</th>
                     <th>Right {matchRight || 'Column'}</th>
