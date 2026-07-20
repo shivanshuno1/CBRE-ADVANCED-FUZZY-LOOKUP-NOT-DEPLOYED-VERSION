@@ -12,27 +12,88 @@ const upload = multer({ dest: 'uploads/' });
 
 let workbook = null;
 
+// Abbreviation dictionary used to normalize both sides before scoring.
+// Add new entries here (Query point 4 asked for IT -> Information Technology).
+const ABBR_MAP = {
+  pvt: 'private', ltd: 'limited', corp: 'corporation',
+  inc: 'incorporated', co: 'company', llc: 'limited liability company',
+  llp: 'limited liability partnership', pl: 'private limited',
+  it: 'information technology', hr: 'human resources',
+  bpo: 'business process outsourcing', kpo: 'knowledge process outsourcing',
+  mfg: 'manufacturing', intl: 'international', assn: 'association',
+  svcs: 'services', svc: 'service', grp: 'group', dev: 'development',
+  tech: 'technology', ind: 'industries', mktg: 'marketing'
+};
+
+// Strip punctuation (periods, commas, ampersands, hyphens...) down to plain
+// words + single spaces, BEFORE anything else touches the string. This is
+// what point 2 needed: "J.d Group" and "J D group" must become identical
+// strings ("j d group") so they are treated the same everywhere - including
+// prefix bucketing, not just scoring.
+function normalize(s) {
+  return String(s)
+    .toLowerCase()
+    .replace(/[.,'’&/\\-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function expandAbbr(s) {
-  const map = {
-    pvt: 'private', ltd: 'limited', corp: 'corporation',
-    inc: 'incorporated', co: 'company', llc: 'limited liability company'
-  };
-  return s.toLowerCase().replace(/\b(\w+)\b/g, w => map[w] || w);
+  const cleaned = normalize(s);
+  return cleaned.replace(/\b(\w+)\b/g, w => ABBR_MAP[w] || w);
+}
+
+// Generic connector words that shouldn't count as the "anchor" word of a name.
+const GENERIC_WORDS = new Set(['the', 'a', 'an', 'of', 'and']);
+
+function firstMeaningfulWord(s) {
+  const words = s.split(' ').filter(Boolean);
+  for (const w of words) {
+    if (!GENERIC_WORDS.has(w)) return w;
+  }
+  return words[0] || '';
 }
 
 function similarity(a, b) {
   if (!a || !b) return 0;
-  const s1 = expandAbbr(String(a));
-  const s2 = expandAbbr(String(b));
+  const s1 = expandAbbr(a);
+  const s2 = expandAbbr(b);
   if (s1 === s2) return 100;
-  return fuzzball.token_set_ratio(s1, s2);
+
+  // token_set_ratio alone treats a strict subset of tokens as a 100% match
+  // (e.g. "Vinnove and Services Private Limited" scores 100 against
+  // "Vinnove Software and Services Private Limited", tying with the actual
+  // exact match). Blending in token_sort_ratio, which is sensitive to the
+  // missing/extra token, breaks that tie in favor of the more complete name.
+  const setRatio = fuzzball.token_set_ratio(s1, s2);
+  const sortRatio = fuzzball.token_sort_ratio(s1, s2);
+  const base = (setRatio * 0.5) + (sortRatio * 0.5);
+
+  // Give the first/anchor word of the name extra weight (point 3): the
+  // opening word ("Citadel", "Morephen"...) is usually the actual identifying
+  // name, while trailing words (Hotel, Group, Developer, Laboratory...) are
+  // just descriptors and shouldn't be allowed to outweigh it.
+  const w1 = firstMeaningfulWord(s1);
+  const w2 = firstMeaningfulWord(s2);
+  const firstWordScore = (w1 && w2) ? (w1 === w2 ? 100 : fuzzball.ratio(w1, w2)) : 0;
+
+  let blended = (base * 0.6) + (firstWordScore * 0.4);
+
+  // If the anchor words are a poor match, cap the score so a strong overlap
+  // in descriptor words alone (e.g. "Developer"/"Developers") can't win
+  // ("City Developers" beating "Citadel Hotel" for input "Citadel Developer").
+  if (firstWordScore < 55) blended = Math.min(blended, 70);
+
+  return Math.round(Math.max(0, Math.min(100, blended)));
 }
 
-// Helper: build prefix index (first 3 letters)
+// Helper: build prefix index (first 3 letters of the NORMALIZED value, so
+// punctuation differences like "J.d" vs "J D" land in the same bucket
+// instead of being silently excluded from candidates entirely)
 function buildIndex(data, column) {
   const index = new Map();
   for (let i = 0; i < data.length; i++) {
-    const val = data[i][column] ? String(data[i][column]).toLowerCase() : '';
+    const val = data[i][column] ? normalize(data[i][column]) : '';
     if (val.length >= 3) {
       const prefix = val.substring(0, 3);
       if (!index.has(prefix)) index.set(prefix, []);
@@ -118,7 +179,7 @@ app.post('/api/fuzzy-match-preview', async (req, res) => {
     for (let li = 0; li < leftData.length; li++) {
       const leftRow = leftData[li];
       const leftVal = leftRow[columnLeft] ? String(leftRow[columnLeft]) : '';
-      const leftPrefix = leftVal.length >= 3 ? leftVal.substring(0, 3).toLowerCase() : '';
+      const leftPrefix = normalize(leftVal).length >= 3 ? normalize(leftVal).substring(0, 3) : '';
       
       let candidates = [];
       if (rightIndex.has(leftPrefix)) {
@@ -169,7 +230,7 @@ app.post('/api/fuzzy-compare-cross-sheet', (req, res) => {
   
   for (const leftRow of leftData) {
     const leftVal = leftRow[columnLeft] ? String(leftRow[columnLeft]) : '';
-    const leftPrefix = leftVal.length >= 3 ? leftVal.substring(0, 3).toLowerCase() : '';
+    const leftPrefix = normalize(leftVal).length >= 3 ? normalize(leftVal).substring(0, 3) : '';
     let candidates = rightIndex.get(leftPrefix) || [];
     if (candidates.length === 0) candidates = Array.from({ length: Math.min(1000, rightData.length) }, (_, i) => i);
     
@@ -226,7 +287,7 @@ app.post('/api/multi-key-match-preview', async (req, res) => {
 
     for (const leftRow of leftData) {
       const leftPrimary = leftRow[primaryKey.leftCol] ? String(leftRow[primaryKey.leftCol]) : '';
-      const leftPrefix  = leftPrimary.length >= 3 ? leftPrimary.substring(0, 3).toLowerCase() : '';
+      const leftPrefix  = normalize(leftPrimary).length >= 3 ? normalize(leftPrimary).substring(0, 3) : '';
 
       // If there's an id/exact key, search all rows (id values may not share a name prefix)
       let candidates = hasIdKey
@@ -290,7 +351,7 @@ app.post('/api/multi-key-match-download', (req, res) => {
 
     for (const leftRow of leftData) {
       const leftPrimary = leftRow[primaryKey.leftCol] ? String(leftRow[primaryKey.leftCol]) : '';
-      const leftPrefix  = leftPrimary.length >= 3 ? leftPrimary.substring(0, 3).toLowerCase() : '';
+      const leftPrefix  = normalize(leftPrimary).length >= 3 ? normalize(leftPrimary).substring(0, 3) : '';
 
       let candidates = hasIdKey
         ? Array.from({ length: rightData.length }, (_, i) => i)
